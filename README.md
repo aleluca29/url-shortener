@@ -1,20 +1,96 @@
-# URL Shortener – Week 7 Milestone
+# URL Shortener with Analytics (Rust + Axum + SQLite)
 
-## Overview
-This project is a URL Shortener built in **Rust** for the **ATAD 2025–2026** course.  
-It converts long URLs into short ones and tracks how many times each link was used.  
-The app uses **Axum** for the web server and **SQLite** for data storage.
+This repo starts from a Week 7 milestone (basic shorten + redirect + click counting) and evolves into a full project:
 
----
+- REST API for shortening, redirecting, and analytics
+- Short code generation with collision handling
+- Optional custom short codes
+- Rate limiting (10 requests/minute per IP)
+- Expiration dates
+- QR code generation
+- Web dashboard
 
-## How to Run
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/aleluca29/url-shortener.git
-   cd url-shortener
+> Note: Some features from the list above will be added in future commits.  
+> Current progress includes shortening, redirecting, click counting, custom codes and expiration validation.
 
-2. Run the app: cargo run
+## Run (dev)
 
-3. Open in browser:
-http://localhost:3000/health
---> should show ok
+```bash
+cargo run
+```
+
+Then open:
+- Health: `http://localhost:3000/health`
+
+## API Testing
+
+### 1. Health Check
+```powershell
+curl -UseBasicParsing http://localhost:3000/health
+```
+Expected: `ok`
+
+### 2. Create a Short Link (random code)
+```powershell
+Invoke-RestMethod -Method POST `
+  -Uri "http://localhost:3000/api/shorten" `
+  -ContentType "application/json" `
+  -Body '{ "url": "https://www.rust-lang.org/learn" }'
+```
+Expected: returns `code` + `short_url`
+
+### 3. Redirect
+```powershell
+curl.exe -i http://localhost:3000/<CODE>
+```
+Expected: `307 Temporary Redirect` and a `Location:` header
+
+### 4. Stats (total clicks)
+```powershell
+curl.exe http://localhost:3000/api/links/<CODE>/stats
+```
+Expected:
+```json
+{"total_clicks":1}
+```
+
+### 5. Create a Short Link (custom code)
+```powershell
+Invoke-RestMethod -Method POST `
+  -Uri "http://localhost:3000/api/shorten" `
+  -ContentType "application/json" `
+  -Body '{ "url": "https://docs.rs/sqlx/latest/sqlx/", "custom_code": "sqlxdocs" }'
+```
+Expected: returns `code = sqlxdocs`
+
+### 6. Custom code already exists (409)
+```powershell
+try {
+  Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:3000/api/shorten" `
+    -ContentType "application/json" `
+    -Body '{ "url": "https://example.org/another-page", "custom_code": "sqlxdocs" }'
+} catch {
+  [int]$_.Exception.Response.StatusCode
+}
+```
+Expected: `409`
+
+### 7. Invalid expiration format (400)
+```powershell
+try {
+  Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:3000/api/shorten" `
+    -ContentType "application/json" `
+    -Body '{ "url": "https://www.mozilla.org", "expires_at": "tomorrow" }'
+} catch {
+  [int]$_.Exception.Response.StatusCode
+}
+```
+Expected: `400`
+
+## Database
+
+SQLite file defaults to `dev.db` in the project root.
+Migrations run automatically on startup.
+
