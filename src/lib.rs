@@ -212,27 +212,80 @@ fn client_ip_from_headers(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-async fn redirect(State(state): State<AppState>, Path(code): Path<String>) -> impl IntoResponse {
-    let row: Option<(String,)> = sqlx::query_as("SELECT target_url FROM urls WHERE code = ?")
+async fn redirect(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT target_url, expires_at FROM urls WHERE code = ?")
         .bind(&code)
         .fetch_optional(&state.pool)
         .await
         .unwrap();
 
-    if let Some((target,)) = row {
+    if let Some((target, expires_at)) = row {
+        if is_expired(expires_at.as_deref()) {
+            return (StatusCode::GONE, "This link has expired").into_response();
+        }
+
+        let ip = client_ip_from_headers(&headers).unwrap_or_else(|| "local".to_string());
+        let ua = headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let referer = headers
+            .get(header::REFERER)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let country = country_from_headers(&headers);
+        let city = headers
+            .get("x-geo-city")
+            .or_else(|| headers.get("cf-ipcity"))
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
         let now = OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap();
-        let _ = sqlx::query("INSERT INTO clicks (code, at, ip) VALUES (?, ?, ?)")
+        let _ = sqlx::query(
+            "INSERT INTO clicks (code, at, ip, user_agent, referer, country, city) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
             .bind(&code)
             .bind(now)
-            .bind("local")
+            .bind(ip)
+            .bind(ua)
+            .bind(referer)
+            .bind(country)
+            .bind(city)
             .execute(&state.pool)
             .await;
         Redirect::temporary(&target).into_response()
     } else {
         (StatusCode::NOT_FOUND, "Not found").into_response()
     }
+}
+
+fn is_expired(expires_at: Option<&str>) -> bool {
+    let Some(exp) = expires_at else { return false };
+    let Ok(exp) = OffsetDateTime::parse(exp, &time::format_description::well_known::Rfc3339) else {
+        return true;
+    };
+    OffsetDateTime::now_utc() >= exp
+}
+
+fn country_from_headers(headers: &HeaderMap) -> Option<String> {
+    let candidates = ["cf-ipcountry", "x-geo-country", "x-country"];
+    for key in candidates {
+        if let Some(v) = headers.get(key).and_then(|v| v.to_str().ok()) {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 #[derive(Serialize)]

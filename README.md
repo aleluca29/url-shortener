@@ -89,6 +89,32 @@ try {
 ```
 Expected: `400`
 
+### 8. Expired link redirect (410)
+```powershell
+Invoke-RestMethod -Method POST `
+  -Uri "http://localhost:3000/api/shorten" `
+  -ContentType "application/json" `
+  -Body '{ "url": "https://example.com", "custom_code": "expired1", "expires_at": "2000-01-01T00:00:00Z" }'
+
+curl.exe -i http://localhost:3000/expired1
+```
+Expected: `410 Gone`
+
+### 9. Redirect with metadata headers
+```powershell
+Invoke-RestMethod -Method POST `
+  -Uri "http://localhost:3000/api/shorten" `
+  -ContentType "application/json" `
+  -Body '{ "url": "https://www.rust-lang.org", "custom_code": "meta1" }'
+
+curl.exe -i http://localhost:3000/meta1 `
+  -H "X-Forwarded-For: 1.2.3.4" `
+  -H "User-Agent: test-agent" `
+  -H "Referer: https://ref.example" `
+  -H "CF-IPCountry: RO"
+```
+Expected: `307 Temporary Redirect`
+
 ## Database
 
 SQLite file defaults to `dev.db` in the project root.
