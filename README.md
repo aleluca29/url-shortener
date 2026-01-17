@@ -115,6 +115,22 @@ curl.exe -i http://localhost:3000/meta1 `
 ```
 Expected: `307 Temporary Redirect`
 
+### 10. Enhanced analytics (unique visitors + geo + daily)
+
+The stats endpoint now returns more detailed analytics, including:
+
+- unique_visitors
+- clicks_by_day
+- top_countries
+- recent_clicks
+
+```powershell
+Invoke-RestMethod -Method GET `
+  -Uri "http://localhost:3000/api/links/<CODE>/stats"
+```
+
+Expected: JSON includes `total_clicks` plus the fields above.
+
 ## Database
 
 SQLite file defaults to `dev.db` in the project root.

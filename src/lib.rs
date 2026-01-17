@@ -92,7 +92,6 @@ async fn shorten(
         })?;
         custom.to_string()
     } else {
-
         const MAX_ATTEMPTS: usize = 8;
         let mut last_err: Option<anyhow::Error> = None;
         let mut code: Option<String> = None;
@@ -290,19 +289,135 @@ fn country_from_headers(headers: &HeaderMap) -> Option<String> {
 
 #[derive(Serialize)]
 struct StatsResp {
+    code: String,
+    target_url: String,
+    created_at: String,
+    expires_at: Option<String>,
+
     total_clicks: i64,
+    unique_visitors: i64,
+    clicks_by_day: Vec<DailyStats>,
+    top_countries: Vec<CountryStat>,
+    recent_clicks: Vec<RecentClick>,
+}
+
+#[derive(Serialize)]
+struct DailyStats {
+    day: String,
+    clicks: i64,
+    unique_visitors: i64,
+}
+
+#[derive(Serialize)]
+struct CountryStat {
+    country: String,
+    clicks: i64,
+}
+
+#[derive(Serialize)]
+struct RecentClick {
+    at: String,
+    ip: Option<String>,
+    country: Option<String>,
+    user_agent: Option<String>,
+    referer: Option<String>,
 }
 
 async fn stats(
     State(state): State<AppState>,
     Path(code): Path<String>,
 ) -> Result<Json<StatsResp>, (StatusCode, String)> {
-    let row: (i64,) = sqlx::query_as("SELECT count(*) FROM clicks WHERE code = ?")
+    let url_row: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT target_url, created_at, expires_at FROM urls WHERE code = ?",
+    )
+    .bind(&code)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal)?;
+
+    let Some((target_url, created_at, expires_at)) = url_row else {
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
+    };
+
+    let total_clicks: (i64,) = sqlx::query_as("SELECT count(*) FROM clicks WHERE code = ?")
         .bind(&code)
         .fetch_one(&state.pool)
         .await
         .map_err(internal)?;
-    Ok(Json(StatsResp { total_clicks: row.0 }))
+
+    let unique_visitors: (i64,) = sqlx::query_as(
+        "SELECT count(DISTINCT ip) FROM clicks WHERE code = ? AND ip IS NOT NULL",
+    )
+    .bind(&code)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(internal)?;
+
+    let daily_rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT substr(at, 1, 10) as day, count(*) as clicks, count(DISTINCT ip) as unique_visitors \
+         FROM clicks WHERE code = ? GROUP BY day ORDER BY day DESC LIMIT 30",
+    )
+    .bind(&code)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+
+    let clicks_by_day = daily_rows
+        .into_iter()
+        .map(|(day, clicks, unique_visitors)| DailyStats {
+            day,
+            clicks,
+            unique_visitors,
+        })
+        .collect();
+
+    let country_rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT country, count(*) as clicks FROM clicks \
+         WHERE code = ? AND country IS NOT NULL \
+         GROUP BY country ORDER BY clicks DESC LIMIT 10",
+    )
+    .bind(&code)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+
+    let top_countries = country_rows
+        .into_iter()
+        .map(|(country, clicks)| CountryStat { country, clicks })
+        .collect();
+
+    let recent_rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as(
+            "SELECT at, ip, country, user_agent, referer \
+             FROM clicks WHERE code = ? ORDER BY at DESC LIMIT 25",
+        )
+        .bind(&code)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(internal)?;
+
+    let recent_clicks = recent_rows
+        .into_iter()
+        .map(|(at, ip, country, user_agent, referer)| RecentClick {
+            at,
+            ip,
+            country,
+            user_agent,
+            referer,
+        })
+        .collect();
+
+    Ok(Json(StatsResp {
+        code,
+        target_url,
+        created_at,
+        expires_at,
+        total_clicks: total_clicks.0,
+        unique_visitors: unique_visitors.0,
+        clicks_by_day,
+        top_countries,
+        recent_clicks,
+    }))
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
