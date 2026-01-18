@@ -184,6 +184,22 @@ Invoke-RestMethod -Method GET `
 Expected: returns a list of all saved links with fields like `code`, `target_url` and click statistics.
 
 
+### 14. Web dashboard (UI)
+
+Open the dashboard in your browser:
+- `http://localhost:3000/`
+
+Expected:
+- You can create short links from the UI
+- You can see all saved links and their statistics
+
+Open a link details page:
+- `http://localhost:3000/links/<CODE>`
+
+Expected:
+- Shows total clicks, unique visitors, countries, recent clicks and QR code
+
+
 ## Database
 
 SQLite file defaults to `dev.db` in the project root.

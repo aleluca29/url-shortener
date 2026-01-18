@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
     body::Bytes,
-    response::{IntoResponse, Redirect},
+    response::{Html, IntoResponse, Redirect},
     routing::{get, post},
     Json, Router,
 };
@@ -81,6 +81,8 @@ pub fn router(state: AppState) -> Router {
         ));
 
     Router::new()
+        .route("/", get(dashboard_index))
+        .route("/links/:code", get(dashboard_link))
         .route("/health", get(|| async { "ok" }))
         .route("/api/shorten", rate_limited_shorten)
         .route("/api/links", get(list_links))
@@ -88,6 +90,227 @@ pub fn router(state: AppState) -> Router {
         .route("/api/links/:code/qr", get(qr_png))
         .route("/api/links/:code/stats", get(stats))
         .with_state(state)
+}
+
+async fn dashboard_index(State(state): State<AppState>) -> Result<Html<String>, (StatusCode, String)> {
+    let links = query_link_summaries(&state).await.map_err(internal)?;
+
+    let mut rows = String::new();
+    for l in links {
+        let status = if l.expired { "expired" } else { "active" };
+        rows.push_str(&format!(
+            "<tr><td><a href=\"/links/{code}\">{code}</a></td><td class=\"mono\">{target}</td><td>{created}</td><td>{expires}</td><td>{status}</td><td>{clicks}</td><td>{uv}</td></tr>",
+            code = html_escape(&l.code),
+            target = html_escape(&l.target_url),
+            created = html_escape(&l.created_at),
+            expires = html_escape(l.expires_at.as_deref().unwrap_or("-")),
+            status = status,
+            clicks = l.total_clicks,
+            uv = l.unique_visitors,
+        ));
+    }
+
+    let page = layout(
+        "URL Shortener Dashboard",
+        &format!(
+            r#"
+<h1>URL Shortener</h1>
+
+<div class="card">
+  <h2>Create a short link</h2>
+  <form id="shorten-form">
+    <label>Long URL</label>
+    <input name="url" placeholder="https://example.com/very/long" required />
+
+    <label>Custom code (optional)</label>
+    <input name="custom_code" placeholder="my-link" />
+
+    <label>Expires at (optional, RFC3339)</label>
+    <input name="expires_at" placeholder="2026-01-31T00:00:00Z" />
+
+    <button type="submit">Shorten</button>
+  </form>
+  <div id="result" class="result"></div>
+</div>
+
+<div class="card">
+  <h2>All links</h2>
+  <table>
+    <thead>
+      <tr><th>Code</th><th>Target</th><th>Created</th><th>Expires</th><th>Status</th><th>Clicks</th><th>Unique</th></tr>
+    </thead>
+    <tbody>
+      {rows}
+    </tbody>
+  </table>
+</div>
+
+<script>
+  const form = document.getElementById('shorten-form');
+  const result = document.getElementById('result');
+
+  form.addEventListener('submit', async (e) => {{
+    e.preventDefault();
+    result.textContent = 'Working...';
+
+    const data = Object.fromEntries(new FormData(form));
+    if (!data.custom_code) delete data.custom_code;
+    if (!data.expires_at) delete data.expires_at;
+
+    const resp = await fetch('/api/shorten', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify(data)
+    }});
+
+    const text = await resp.text();
+    if (!resp.ok) {{
+      result.textContent = 'Error: ' + text;
+      return;
+    }}
+    const json = JSON.parse(text);
+    result.innerHTML = `Short URL: <a href="${{json.short_url}}" target="_blank">${{json.short_url}}</a>
+      <br/>QR: <a href="${{json.qr_png_url}}" target="_blank">${{json.qr_png_url}}</a>`;
+    form.reset();
+  }});
+</script>
+"#,
+            rows = rows
+        ),
+    );
+    Ok(Html(page))
+}
+
+async fn dashboard_link(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    let stats = query_stats(&state, &code).await?;
+
+    let mut countries = String::new();
+    for c in &stats.top_countries {
+        countries.push_str(&format!(
+            "<li><span class=\"mono\">{country}</span> — {clicks}</li>",
+            country = html_escape(&c.country),
+            clicks = c.clicks
+        ));
+    }
+    if countries.is_empty() {
+        countries.push_str("<li>-</li>");
+    }
+
+    let mut recent = String::new();
+    for r in &stats.recent_clicks {
+        recent.push_str(&format!(
+            "<tr><td>{at}</td><td class=\"mono\">{ip}</td><td>{country}</td><td class=\"mono\">{ua}</td></tr>",
+            at = html_escape(&r.at),
+            ip = html_escape(r.ip.as_deref().unwrap_or("-")),
+            country = html_escape(r.country.as_deref().unwrap_or("-")),
+            ua = html_escape(r.user_agent.as_deref().unwrap_or("-")),
+        ));
+    }
+    if recent.is_empty() {
+        recent.push_str("<tr><td colspan=\"4\">-</td></tr>");
+    }
+
+    let page = layout(
+        &format!("Stats for {}", html_escape(&code)),
+        &format!(
+            r#"
+<a href="/">← Back</a>
+
+<h1>Link <span class="mono">/{code}</span></h1>
+
+<div class="grid">
+  <div class="card">
+    <h2>Link</h2>
+    <p><strong>Target</strong><br/><span class="mono">{target}</span></p>
+    <p><strong>Short URL</strong><br/><a href="{short_url}" target="_blank">{short_url}</a></p>
+    <p><strong>Created</strong><br/>{created}</p>
+    <p><strong>Expires</strong><br/>{expires}</p>
+  </div>
+
+  <div class="card">
+    <h2>QR</h2>
+    <img class="qr" src="/api/links/{code}/qr" alt="QR code" />
+  </div>
+
+  <div class="card">
+    <h2>Totals</h2>
+    <p class="big">{clicks} clicks</p>
+    <p class="big">{unique} unique visitors</p>
+  </div>
+
+  <div class="card">
+    <h2>Top countries</h2>
+    <ul>{countries}</ul>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Recent clicks</h2>
+  <table>
+    <thead><tr><th>At</th><th>IP</th><th>Country</th><th>User-Agent</th></tr></thead>
+    <tbody>{recent}</tbody>
+  </table>
+</div>
+"#,
+            code = html_escape(&stats.code),
+            target = html_escape(&stats.target_url),
+            short_url = html_escape(&format!("{}/{}", state.base_url, stats.code)),
+            created = html_escape(&stats.created_at),
+            expires = html_escape(stats.expires_at.as_deref().unwrap_or("-")),
+            clicks = stats.total_clicks,
+            unique = stats.unique_visitors,
+            countries = countries,
+            recent = recent,
+        ),
+    );
+    Ok(Html(page))
+}
+
+fn layout(title: &str, body: &str) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <style>
+      body {{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; line-height: 1.35; }}
+      h1 {{ margin: 0 0 12px 0; }}
+      h2 {{ margin: 0 0 12px 0; font-size: 18px; }}
+      a {{ color: #0b62d6; }}
+      table {{ width: 100%; border-collapse: collapse; }}
+      th, td {{ border-bottom: 1px solid #ddd; padding: 8px; vertical-align: top; }}
+      th {{ text-align: left; }}
+      .card {{ border: 1px solid #e5e5e5; border-radius: 12px; padding: 16px; margin: 16px 0; }}
+      .grid {{ display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }}
+      .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }}
+      input {{ width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 10px; margin-bottom: 10px; }}
+      button {{ padding: 10px 14px; border-radius: 10px; border: 1px solid #0b62d6; background: #0b62d6; color: white; cursor: pointer; }}
+      .result {{ margin-top: 10px; }}
+      .big {{ font-size: 22px; margin: 8px 0; }}
+      .qr {{ width: 240px; height: 240px; image-rendering: pixelated; }}
+    </style>
+  </head>
+  <body>
+    {body}
+  </body>
+</html>"#,
+        title = title,
+        body = body
+    )
+}
+
+fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 #[derive(Serialize)]
@@ -101,7 +324,7 @@ struct LinkSummary {
     unique_visitors: i64,
 }
 
-async fn list_links(State(state): State<AppState>) -> Result<Json<Vec<LinkSummary>>, (StatusCode, String)> {
+async fn query_link_summaries(state: &AppState) -> Result<Vec<LinkSummary>, sqlx::Error> {
     let rows: Vec<(String, String, String, Option<String>, i64, i64)> = sqlx::query_as(
         "SELECT u.code, u.target_url, u.created_at, u.expires_at, \
                 count(c.id) as total_clicks, count(DISTINCT c.ip) as unique_visitors \
@@ -109,10 +332,9 @@ async fn list_links(State(state): State<AppState>) -> Result<Json<Vec<LinkSummar
          GROUP BY u.code ORDER BY u.created_at DESC",
     )
     .fetch_all(&state.pool)
-    .await
-    .map_err(internal)?;
+    .await?;
 
-    let out = rows
+    Ok(rows
         .into_iter()
         .map(|(code, target_url, created_at, expires_at, total_clicks, unique_visitors)| {
             let expired = is_expired(expires_at.as_deref());
@@ -126,8 +348,13 @@ async fn list_links(State(state): State<AppState>) -> Result<Json<Vec<LinkSummar
                 unique_visitors,
             }
         })
-        .collect();
+        .collect())
+}
 
+async fn list_links(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<LinkSummary>>, (StatusCode, String)> {
+    let out = query_link_summaries(&state).await.map_err(internal)?;
     Ok(Json(out))
 }
 
@@ -465,10 +692,15 @@ async fn stats(
     State(state): State<AppState>,
     Path(code): Path<String>,
 ) -> Result<Json<StatsResp>, (StatusCode, String)> {
+    let stats = query_stats(&state, &code).await?;
+    Ok(Json(stats))
+}
+
+async fn query_stats(state: &AppState, code: &str) -> Result<StatsResp, (StatusCode, String)> {
     let url_row: Option<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT target_url, created_at, expires_at FROM urls WHERE code = ?",
     )
-    .bind(&code)
+    .bind(code)
     .fetch_optional(&state.pool)
     .await
     .map_err(internal)?;
@@ -478,7 +710,7 @@ async fn stats(
     };
 
     let total_clicks: (i64,) = sqlx::query_as("SELECT count(*) FROM clicks WHERE code = ?")
-        .bind(&code)
+        .bind(code)
         .fetch_one(&state.pool)
         .await
         .map_err(internal)?;
@@ -486,7 +718,7 @@ async fn stats(
     let unique_visitors: (i64,) = sqlx::query_as(
         "SELECT count(DISTINCT ip) FROM clicks WHERE code = ? AND ip IS NOT NULL",
     )
-    .bind(&code)
+    .bind(code)
     .fetch_one(&state.pool)
     .await
     .map_err(internal)?;
@@ -495,7 +727,7 @@ async fn stats(
         "SELECT substr(at, 1, 10) as day, count(*) as clicks, count(DISTINCT ip) as unique_visitors \
          FROM clicks WHERE code = ? GROUP BY day ORDER BY day DESC LIMIT 30",
     )
-    .bind(&code)
+    .bind(code)
     .fetch_all(&state.pool)
     .await
     .map_err(internal)?;
@@ -514,7 +746,7 @@ async fn stats(
          WHERE code = ? AND country IS NOT NULL \
          GROUP BY country ORDER BY clicks DESC LIMIT 10",
     )
-    .bind(&code)
+    .bind(code)
     .fetch_all(&state.pool)
     .await
     .map_err(internal)?;
@@ -529,7 +761,7 @@ async fn stats(
             "SELECT at, ip, country, user_agent, referer \
              FROM clicks WHERE code = ? ORDER BY at DESC LIMIT 25",
         )
-        .bind(&code)
+        .bind(code)
         .fetch_all(&state.pool)
         .await
         .map_err(internal)?;
@@ -545,8 +777,8 @@ async fn stats(
         })
         .collect();
 
-    Ok(Json(StatsResp {
-        code,
+    Ok(StatsResp {
+        code: code.to_string(),
         target_url,
         created_at,
         expires_at,
@@ -555,7 +787,7 @@ async fn stats(
         clicks_by_day,
         top_countries,
         recent_clicks,
-    }))
+    })
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
