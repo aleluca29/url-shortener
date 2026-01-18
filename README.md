@@ -213,3 +213,21 @@ Expected: all integration tests pass (ok)
 SQLite file defaults to `dev.db` in the project root.
 Migrations run automatically on startup.
 
+
+## Windows: DATABASE_URL fix (optional)
+
+If you get `unable to open database file` on Windows, set a full SQLite path:
+
+```powershell
+$dir = "C:\url-shortener-db"
+New-Item -ItemType Directory -Force $dir | Out-Null
+
+$db = Join-Path $dir "dev.db"
+New-Item -ItemType File -Force $db | Out-Null
+
+$env:DATABASE_URL = "sqlite:///" + ($db -replace "\\","/")
+cargo run
+```
+
+Expected: server starts normally (listening on `127.0.0.1:3000`)
+
