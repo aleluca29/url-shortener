@@ -199,6 +199,14 @@ Open a link details page:
 Expected:
 - Shows total clicks, unique visitors, countries, recent clicks and QR code
 
+## Run tests
+
+```powershell
+cargo test
+```
+
+Expected: all integration tests pass (ok)
+
 
 ## Database
 
