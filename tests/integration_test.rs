@@ -4,7 +4,7 @@ use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use std::time::Duration;
 use tower::ServiceExt;
 
-use url_shortener::{router, AppState};
+use url_shortener::{router, AppState, RateLimiter};
 
 async fn test_app() -> axum::Router {
     let pool: Pool<Sqlite> = SqlitePoolOptions::new()
@@ -19,6 +19,7 @@ async fn test_app() -> axum::Router {
     let state = AppState {
         pool,
         base_url: "http://localhost:3000".to_string(),
+        rate_limiter: RateLimiter::new(10, Duration::from_secs(60)),
     };
 
     router(state)

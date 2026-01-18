@@ -3,7 +3,7 @@ use std::{net::SocketAddr, time::Duration};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use url_shortener::{router, AppState};
+use url_shortener::{router, AppState, RateLimiter};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         pool,
         base_url: "http://localhost:3000".to_string(),
+        rate_limiter: RateLimiter::new(10, Duration::from_secs(60)),
     };
 
     let app = router(state).layer(TraceLayer::new_for_http());

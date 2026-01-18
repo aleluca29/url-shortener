@@ -131,6 +131,24 @@ Invoke-RestMethod -Method GET `
 
 Expected: JSON includes `total_clicks` plus the fields above.
 
+### 11. Rate limiting (10 requests/minute per IP)
+
+```powershell
+for ($i=1; $i -le 11; $i++) {
+  try {
+    Invoke-RestMethod -Method POST `
+      -Uri "http://localhost:3000/api/shorten" `
+      -ContentType "application/json" `
+      -Body '{ "url": "https://example.com/rate" }'
+    "OK"
+  } catch {
+    [int]$_.Exception.Response.StatusCode
+  }
+}
+```
+Expected: first ~10 requests return `OK`, then you get `429`
+
+
 ## Database
 
 SQLite file defaults to `dev.db` in the project root.

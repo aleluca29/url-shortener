@@ -8,12 +8,45 @@ use axum::{
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 use time::OffsetDateTime;
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: Pool<Sqlite>,
     pub base_url: String,
+    pub rate_limiter: RateLimiter,
+}
+
+
+#[derive(Clone)]
+pub struct RateLimiter {
+    inner: Arc<Mutex<HashMap<String, Vec<std::time::Instant>>>>,
+    limit: usize,
+    window: Duration,
+}
+
+impl RateLimiter {
+    pub fn new(limit: usize, window: Duration) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            limit,
+            window,
+        }
+    }
+
+    pub async fn allow(&self, key: &str) -> bool {
+        let mut map = self.inner.lock().await;
+        let now = std::time::Instant::now();
+        let entry = map.entry(key.to_string()).or_default();
+        entry.retain(|t| now.duration_since(*t) < self.window);
+        if entry.len() >= self.limit {
+            return false;
+        }
+        entry.push(now);
+        true
+    }
 }
 
 #[derive(Deserialize)]
@@ -39,12 +72,37 @@ fn gen_code() -> String {
 }
 
 pub fn router(state: AppState) -> Router {
+    let rate_limited_shorten = post(shorten)
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ));
+
     Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/api/shorten", post(shorten))
+        .route("/api/shorten", rate_limited_shorten)
         .route("/:code", get(redirect))
         .route("/api/links/:code/stats", get(stats))
         .with_state(state)
+}
+
+async fn rate_limit_middleware(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> impl IntoResponse {
+    let headers = req.headers();
+    let ip = client_ip_from_headers(headers).unwrap_or_else(|| "local".to_string());
+
+    if !state.rate_limiter.allow(&ip).await {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate limit exceeded (10 requests/minute)".to_string(),
+        )
+            .into_response();
+    }
+
+    next.run(req).await
 }
 
 async fn shorten(
