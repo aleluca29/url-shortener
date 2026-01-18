@@ -21,7 +21,6 @@ pub struct AppState {
     pub rate_limiter: RateLimiter,
 }
 
-
 #[derive(Clone)]
 pub struct RateLimiter {
     inner: Arc<Mutex<HashMap<String, Vec<std::time::Instant>>>>,
@@ -84,10 +83,52 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/shorten", rate_limited_shorten)
+        .route("/api/links", get(list_links))
         .route("/:code", get(redirect))
         .route("/api/links/:code/qr", get(qr_png))
         .route("/api/links/:code/stats", get(stats))
         .with_state(state)
+}
+
+#[derive(Serialize)]
+struct LinkSummary {
+    code: String,
+    target_url: String,
+    created_at: String,
+    expires_at: Option<String>,
+    expired: bool,
+    total_clicks: i64,
+    unique_visitors: i64,
+}
+
+async fn list_links(State(state): State<AppState>) -> Result<Json<Vec<LinkSummary>>, (StatusCode, String)> {
+    let rows: Vec<(String, String, String, Option<String>, i64, i64)> = sqlx::query_as(
+        "SELECT u.code, u.target_url, u.created_at, u.expires_at, \
+                count(c.id) as total_clicks, count(DISTINCT c.ip) as unique_visitors \
+         FROM urls u LEFT JOIN clicks c ON c.code = u.code \
+         GROUP BY u.code ORDER BY u.created_at DESC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+
+    let out = rows
+        .into_iter()
+        .map(|(code, target_url, created_at, expires_at, total_clicks, unique_visitors)| {
+            let expired = is_expired(expires_at.as_deref());
+            LinkSummary {
+                code,
+                target_url,
+                created_at,
+                expires_at,
+                expired,
+                total_clicks,
+                unique_visitors,
+            }
+        })
+        .collect();
+
+    Ok(Json(out))
 }
 
 async fn rate_limit_middleware(
@@ -439,7 +480,7 @@ async fn stats(
     let total_clicks: (i64,) = sqlx::query_as("SELECT count(*) FROM clicks WHERE code = ?")
         .bind(&code)
         .fetch_one(&state.pool)
-        .await 
+        .await
         .map_err(internal)?;
 
     let unique_visitors: (i64,) = sqlx::query_as(

@@ -174,6 +174,15 @@ curl.exe http://localhost:3000/api/links/qr1/qr -o qr1.png
 
 Expected: a file named `qr1.png`
 
+### 13. List all links
+
+```powershell
+Invoke-RestMethod -Method GET `
+  -Uri "http://localhost:3000/api/links"
+```
+
+Expected: returns a list of all saved links with fields like `code`, `target_url` and click statistics.
+
 
 ## Database
 
