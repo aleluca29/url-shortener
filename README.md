@@ -148,6 +148,32 @@ for ($i=1; $i -le 11; $i++) {
 ```
 Expected: first ~10 requests return `OK`, then you get `429`
 
+### 12. QR Code (PNG)
+
+Create a short link (response includes `qr_png_url`):
+```powershell
+Invoke-RestMethod -Method POST `
+  -Uri "http://localhost:3000/api/shorten" `
+  -ContentType "application/json" `
+  -Body '{ "url": "https://example.com", "custom_code": "qr1" }'
+```
+
+Get QR as PNG:
+
+```powershell
+curl.exe -I http://localhost:3000/api/links/qr1/qr
+```
+
+Expected: `200` OK and `Content-Type: image/png`
+
+Download the QR image:
+
+```powershell
+curl.exe http://localhost:3000/api/links/qr1/qr -o qr1.png
+```
+
+Expected: a file named `qr1.png`
+
 
 ## Database
 

@@ -13,6 +13,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 rand = "0.8"
 time = "0.3"
+qrcode = "0.14"
+image = "0.25"
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "macros", "uuid", "time"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"

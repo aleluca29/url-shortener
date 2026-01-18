@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
+    body::Bytes,
     response::{IntoResponse, Redirect},
     routing::{get, post},
     Json, Router,
@@ -9,6 +10,7 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::io::Cursor;
 use tokio::sync::Mutex;
 use time::OffsetDateTime;
 
@@ -60,6 +62,7 @@ struct ShortenReq {
 struct ShortenResp {
     code: String,
     short_url: String,
+    qr_png_url: String,
     expires_at: Option<String>,
 }
 
@@ -82,6 +85,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route("/api/shorten", rate_limited_shorten)
         .route("/:code", get(redirect))
+        .route("/api/links/:code/qr", get(qr_png))
         .route("/api/links/:code/stats", get(stats))
         .with_state(state)
 }
@@ -183,10 +187,45 @@ async fn shorten(
 
     let short_url = format!("{}/{}", state.base_url, code);
     Ok(Json(ShortenResp {
-        code,
+        qr_png_url: format!("{}/api/links/{}/qr", state.base_url, code),
+        code: code.clone(),
         short_url,
         expires_at: payload.expires_at,
     }))
+}
+
+async fn qr_png(State(state): State<AppState>, Path(code): Path<String>) -> impl IntoResponse {
+    let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM urls WHERE code = ?")
+        .bind(&code)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap();
+
+    if exists.is_none() {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+
+    let short_url = format!("{}/{}", state.base_url, code);
+
+    let qr = match qrcode::QrCode::new(short_url.as_bytes()) {
+        Ok(qr) => qr,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "qr error").into_response(),
+    };
+
+    let img = qr.render::<image::Luma<u8>>().min_dimensions(256, 256).build();
+    let mut png_bytes = Vec::new();
+    if image::DynamicImage::ImageLuma8(img)
+        .write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .is_err()
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "qr encode error").into_response();
+    }
+
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        Bytes::from(png_bytes),
+    )
+        .into_response()
 }
 
 #[derive(Debug)]
@@ -400,7 +439,7 @@ async fn stats(
     let total_clicks: (i64,) = sqlx::query_as("SELECT count(*) FROM clicks WHERE code = ?")
         .bind(&code)
         .fetch_one(&state.pool)
-        .await
+        .await 
         .map_err(internal)?;
 
     let unique_visitors: (i64,) = sqlx::query_as(
