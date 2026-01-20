@@ -576,6 +576,65 @@ fn client_ip_from_headers(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+#[cfg(not(test))]
+fn is_private_or_local_ip(ip: &str) -> bool {
+    ip == "127.0.0.1"
+        || ip == "::1"
+        || ip.starts_with("10.")
+        || ip.starts_with("192.168.")
+        || ip.starts_with("172.16.")
+        || ip.starts_with("172.17.")
+        || ip.starts_with("172.18.")
+        || ip.starts_with("172.19.")
+        || ip.starts_with("172.2")
+        || ip.starts_with("172.30.")
+        || ip.starts_with("172.31.")
+}
+
+#[cfg(not(test))]
+async fn geo_country_lookup(ip: &str) -> Option<String> {
+    if is_private_or_local_ip(ip) {
+        return None;
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
+
+    let url = format!("https://ipapi.co/{}/country/", ip);
+    let text = client
+    .get(url)
+    .header(reqwest::header::USER_AGENT, "url-shortener/1.0")
+    .send()
+    .await
+    .ok()?
+    .text()
+    .await
+    .ok()?;
+    let code = text.trim();
+
+    if code.len() == 2 {
+        Some(code.to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+async fn geo_country_lookup(_ip: &str) -> Option<String> {
+    None
+}
+
+async fn country_from_headers_or_ip(headers: &HeaderMap) -> Option<String> {
+    if let Some(c) = country_from_headers(headers) {
+        return Some(c);
+    }
+
+    let ip = client_ip_from_headers(headers)?;
+    geo_country_lookup(&ip).await
+}
+
 async fn redirect(
     State(state): State<AppState>,
     Path(code): Path<String>,
@@ -593,7 +652,9 @@ async fn redirect(
             return (StatusCode::GONE, "This link has expired").into_response();
         }
 
-        let ip = client_ip_from_headers(&headers).unwrap_or_else(|| "local".to_string());
+        let ip_opt = client_ip_from_headers(&headers);
+        let ip = ip_opt.clone().unwrap_or_else(|| "local".to_string());
+
         let ua = headers
             .get(header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
@@ -602,7 +663,9 @@ async fn redirect(
             .get(header::REFERER)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let country = country_from_headers(&headers);
+
+        let country = country_from_headers_or_ip(&headers).await;
+
         let city = headers
             .get("x-geo-city")
             .or_else(|| headers.get("cf-ipcity"))
@@ -616,15 +679,16 @@ async fn redirect(
             "INSERT INTO clicks (code, at, ip, user_agent, referer, country, city) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-            .bind(&code)
-            .bind(now)
-            .bind(ip)
-            .bind(ua)
-            .bind(referer)
-            .bind(country)
-            .bind(city)
-            .execute(&state.pool)
-            .await;
+        .bind(&code)
+        .bind(now)
+        .bind(ip)
+        .bind(ua)
+        .bind(referer)
+        .bind(country)
+        .bind(city)
+        .execute(&state.pool)
+        .await;
+
         Redirect::temporary(&target).into_response()
     } else {
         (StatusCode::NOT_FOUND, "Not found").into_response()
