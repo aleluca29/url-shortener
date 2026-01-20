@@ -231,3 +231,24 @@ cargo run
 
 Expected: server starts normally (listening on `127.0.0.1:3000`)
 
+## Running with localhost (default)
+
+```powershell
+$env:DATABASE_URL="sqlite:///C:/url-shortener-db/dev.db"
+$env:BASE_URL="http://localhost:3000"
+cargo run
+```
+
+## Running with ngrok (QR works on phone)
+Start ngrok in a second terminal:
+```powershell
+ngrok http 3000
+```
+Copy the Forwarding https URL from ngrok (example: https://xxxx.ngrok-free.dev)
+Restart the app with BASE_URL set to the ngrok URL:
+```powershell
+$env:DATABASE_URL="sqlite:///C:/url-shortener-db/dev.db"
+$env:BASE_URL="https://xxxx.ngrok-free.dev"
+cargo run
+```
+Expected: short links + QR codes use the ngrok URL, so they work on your phone.
