@@ -542,14 +542,11 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
 }
 
 fn validate_custom_code(code: &str) -> Result<(), String> {
-    if !(3..=32).contains(&code.len()) {
-        return Err("custom_code must be 3-32 characters".to_string());
+    if !(6..=8).contains(&code.len()) {
+        return Err("custom_code must be 6-8 characters".to_string());
     }
-    if !code
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("custom_code must be alphanumeric (plus - and _)".to_string());
+    if !code.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("custom_code must be alphanumeric".to_string());
     }
     Ok(())
 }
