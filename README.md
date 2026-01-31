@@ -10,8 +10,6 @@ This repo starts from a Week 7 milestone (basic shorten + redirect + click count
 - QR code generation
 - Web dashboard
 
-> Note: Some features from the list above will be added in future commits.  
-> Current progress includes shortening, redirecting, click counting, custom codes and expiration validation.
 
 ## Run (dev)
 
